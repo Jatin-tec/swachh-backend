@@ -4,23 +4,53 @@ from app.utils.jwt import get_current_user
 from datetime import datetime
 from ..services.report_service import serialize_report
 from ..services.model import make_prediction
+from ..utils.bin.bin_utils import add_bin, get_filled_bins
+from ..utils.bin.routes import get_optimal_route
 from bson import ObjectId
 import pandas as pd
+import logging
 
 bp = Blueprint('waste_management', __name__, url_prefix='/waste')
 
-@bp.route('/bins', methods=['GET'])
-@jwt_required()
-def get_bins():
-    bins = app.db.bins.find()
-    return jsonify([bin for bin in bins]), 200
 
 @bp.route('/bins', methods=['POST'])
 @jwt_required()
-def add_bin():
+def new_bin():
     data = request.get_json()
-    app.db.bins.insert_one(data)
-    return jsonify({'msg': 'Bin added successfully'}), 201
+    result = add_bin(data)
+    return jsonify({'msg': 'Bin added successfully', 'id': str(result.inserted_id)}), 200
+
+
+@bp.route('/bins/filled', methods=['GET'])
+@jwt_required()
+def get_full_bins():
+    bins = get_filled_bins()
+    serialized_bins = [serialize_report(bin) for bin in bins]  # Ensure to serialize ObjectId
+    return jsonify(serialized_bins), 200
+
+
+@bp.route('/bins/route', methods=['GET'])
+@jwt_required()
+def get_route():
+    bins = get_filled_bins()
+    waypoints = [bin['coordinates'] for bin in bins]
+    
+    start_lat = float(request.args.get('start_lat'))
+    start_lng = float(request.args.get('start_lng'))
+    start = {'lat': start_lat, 'lng': start_lng}
+    
+    end_lat = float(request.args.get('end_lat', start_lat))
+    end_lng = float(request.args.get('end_lng', start_lng))
+    end = {'lat': end_lat, 'lng': end_lng}
+    
+    # Log the waypoints and start/end coordinates
+    logging.info(f"Start: {start}")
+    logging.info(f"End: {end}")
+    logging.info(f"Waypoints: {waypoints}")
+
+    route = get_optimal_route(start, end, waypoints)
+    return jsonify(route), 200
+
 
 @bp.route('/report-bin', methods=['POST', 'GET'])
 @jwt_required()
@@ -66,6 +96,7 @@ def serialize_report(report):
     report['_id'] = str(report['_id'])
     return report
 
+
 @bp.route('/reports', methods=['GET', 'PATCH'])
 @jwt_required()
 def get_reports():
@@ -103,21 +134,35 @@ def get_reports():
 def predict():
     data = request.json
     date_str = data['date']
+    initial_level = data['level']
 
     scaler_level = app.scaler_level
     scaler_features = app.scaler_features
 
     model = app.model
 
-    # Example of predicting for a time series (adjust as per your requirement)
-    dates_to_predict = pd.date_range(start=date_str, periods=7, freq='D')  # Predict for 5 days
+    # Predict for 6 upcoming days
+    dates_to_predict = pd.date_range(start=date_str, periods=6, freq='D')
 
     predictions = []
-    for dt in dates_to_predict:
-        prediction_value = make_prediction(dt.strftime('%d/%m/%Y'), model, scaler_level, scaler_features)
+    current_level = float(initial_level)
+
+    # Initialize rolling statistics and lag features (with example values)
+    rolling_mean = current_level
+    rolling_std = 0
+    level_lag_1 = current_level
+    level_lag_2 = current_level
+
+    for i, dt in enumerate(dates_to_predict):
+        prediction_value, rolling_mean, rolling_std, level_lag_1, level_lag_2 = make_prediction(
+            dt.strftime('%d/%m/%Y'), model, scaler_level, scaler_features, current_level, 
+            rolling_mean, rolling_std, level_lag_1, level_lag_2)
+        
+        current_level = prediction_value  # Use predicted value as the next day's input level
         predictions.append({
             'date': dt.strftime('%d/%m/%Y'),
             'predicted_level': float(prediction_value)
         })
 
     return jsonify(predictions), 200
+
