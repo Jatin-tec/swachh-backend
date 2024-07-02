@@ -6,6 +6,8 @@ def get_optimal_route(start, end, waypoints):
     # Format waypoints for Google Maps API
     formatted_waypoints = [{'lat': wp['lat'], 'lng': wp['lng']} for wp in waypoints]
 
+    print(formatted_waypoints)
+
     # Request directions via driving mode
     directions_result = gmaps.directions(
         origin=start,
